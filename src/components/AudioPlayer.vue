@@ -38,7 +38,7 @@
                     @click="playAudio(audio)">
                     <div class="item-info">
                         <div class="item-icon">
-                            {{ currentAudio && currentAudio.id === audio.id && isPlaying ? '🌧️' : '🎵' }}
+                            {{ getAudioIcon(audio.title) }}
                         </div>
                         <div class="item-details">
                             <div class="item-title">{{ audio.title }}</div>
@@ -72,7 +72,7 @@
 </template>
 
 <script>
-// 默认音频列表（使用和HTML一样的可用的在线音频）
+// 默认音频列表
 import { DEFAULT_AUDIOS } from './audios'
 // 存储key
 const STORAGE_KEY = 'rainsleep_audio_list'
@@ -83,34 +83,283 @@ export default {
         return {
             audioList: [],
             currentAudio: null,
-            currentAudioElement: null,
+            audioContext: null,        // Web Audio API 上下文
+            audioBuffer: null,          // 缓存的音频数据
+            sourceNode: null,           // 当前播放源
+            gainNode: null,             // 音量控制节点
             isPlaying: false,
             toastMessage: '',
             toastType: 'info',
             toastTimer: null,
+            fadeInterval: null,         // 淡入淡出定时器
+            isFading: false,              // 是否正在淡变
             DEFAULT_AUDIOS
         }
     },
     mounted() {
         this.loadAudioList()
+        // 初始化 Web Audio API
+        this.initAudioContext()
     },
     beforeUnmount() {
-        if (this.currentAudioElement) {
-            this.currentAudioElement.pause()
-            this.currentAudioElement = null
-        }
         if (this.toastTimer) {
             clearTimeout(this.toastTimer)
         }
+        if (this.fadeInterval) {
+            clearInterval(this.fadeInterval)
+        }
+        if (this.audioContext) {
+            this.audioContext.close()
+        }
     },
     methods: {
-        // 加载音频列表（从localStorage）
+        // 获取音频图标
+        getAudioIcon(title) {
+            if (title.includes('沙漠之夜')) return '🏜️'
+            if (title.includes('旷野蟋蟀')) return '🦗'
+            if (title.includes('夜晚蛐蛐')) return '🌙'
+            if (title.includes('溪流与虫鸣')) return '🏞️'
+            if (title.includes('轻柔小雨声')) return '🌧️'
+            if (title.includes('雷雨')) return '🌩️'
+            return '🎵'
+        },
+
+        // 初始化 Web Audio API
+        initAudioContext() {
+            try {
+                // 创建 AudioContext（需要用户交互后才能启动）
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)()
+                // 创建增益节点（控制音量）
+                this.gainNode = this.audioContext.createGain()
+                this.gainNode.connect(this.audioContext.destination)
+                this.gainNode.gain.value = 0.8 // 设置初始音量
+            } catch (err) {
+                console.error('Web Audio API 初始化失败:', err)
+            }
+        },
+
+        // 加载并缓存音频
+        async loadAudioBuffer(url) {
+            try {
+                const response = await fetch(url)
+                const arrayBuffer = await response.arrayBuffer()
+                const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer)
+                return audioBuffer
+            } catch (err) {
+                console.error('加载音频失败:', err)
+                throw err
+            }
+        },
+
+        // 播放音频（无缝循环）
+        async playAudio(audio) {
+            // 如果正在播放同一首，停止
+            if (this.currentAudio && this.currentAudio.id === audio.id && this.isPlaying) {
+                this.pauseAudio()
+                return
+            }
+
+            // 停止当前播放
+            this.stopPlayback()
+
+            // 恢复 AudioContext（如果被挂起）
+            if (this.audioContext && this.audioContext.state === 'suspended') {
+                await this.audioContext.resume()
+            }
+
+            this.showToast(`🎵 正在加载：${audio.title}`, 'info')
+
+            try {
+                // 加载音频
+                const buffer = await this.loadAudioBuffer(audio.url)
+                this.audioBuffer = buffer
+                this.currentAudio = audio
+
+                // 开始播放（带淡入效果）
+                this.startSeamlessLoop()
+
+            } catch (err) {
+                console.error('播放失败:', err)
+                this.showToast('播放失败，请检查音频链接', 'error')
+            }
+        },
+
+        // 开始无缝循环播放
+        startSeamlessLoop() {
+            if (!this.audioBuffer || !this.audioContext) return
+
+            // 淡出当前播放（如果有）
+            if (this.sourceNode && this.isPlaying) {
+                this.fadeOut(() => {
+                    this.createAndPlaySource()
+                })
+            } else {
+                this.createAndPlaySource()
+            }
+        },
+
+        // 创建并播放音频源
+        createAndPlaySource() {
+            // 创建新的音频源
+            const source = this.audioContext.createBufferSource()
+            source.buffer = this.audioBuffer
+            source.loop = true  // 启用循环
+
+            // 连接节点：source -> gain -> destination
+            source.connect(this.gainNode)
+
+            // 保存当前源
+            this.sourceNode = source
+
+            // 开始播放（从开头）
+            source.start(0)
+            this.isPlaying = true
+
+            // 淡入
+            this.fadeIn()
+
+            // 监听播放结束（理论上 loop=true 不会触发，但以防万一）
+            source.onended = () => {
+                if (this.sourceNode === source && this.isPlaying) {
+                    // 如果循环失效，重新创建
+                    this.createAndPlaySource()
+                }
+            }
+
+            this.$emit('playing')
+            this.showToast(`🎵 正在播放：${this.currentAudio.title}`, 'success')
+        },
+
+        // 淡入效果（0.5秒）
+        fadeIn() {
+            if (this.fadeInterval) clearInterval(this.fadeInterval)
+            this.isFading = true
+
+            const targetVolume = 0.8
+            const startVolume = this.gainNode.gain.value
+            const duration = 500 // 毫秒
+            const steps = 20
+            const stepTime = duration / steps
+            const stepValue = (targetVolume - startVolume) / steps
+
+            let currentStep = 0
+
+            this.fadeInterval = setInterval(() => {
+                currentStep++
+                const newVolume = startVolume + (stepValue * currentStep)
+                this.gainNode.gain.value = Math.min(targetVolume, Math.max(0, newVolume))
+
+                if (currentStep >= steps) {
+                    clearInterval(this.fadeInterval)
+                    this.fadeInterval = null
+                    this.isFading = false
+                }
+            }, stepTime)
+        },
+
+        // 淡出效果（0.5秒）
+        fadeOut(callback) {
+            if (this.fadeInterval) clearInterval(this.fadeInterval)
+            this.isFading = true
+
+            const startVolume = this.gainNode.gain.value
+            const duration = 500
+            const steps = 20
+            const stepTime = duration / steps
+            const stepValue = startVolume / steps
+
+            let currentStep = 0
+
+            this.fadeInterval = setInterval(() => {
+                currentStep++
+                const newVolume = startVolume - (stepValue * currentStep)
+                this.gainNode.gain.value = Math.max(0, newVolume)
+
+                if (currentStep >= steps) {
+                    clearInterval(this.fadeInterval)
+                    this.fadeInterval = null
+                    this.isFading = false
+
+                    // 停止当前源
+                    if (this.sourceNode) {
+                        try {
+                            this.sourceNode.stop()
+                        } catch (e) {
+                            return
+                        }
+                        this.sourceNode = null
+                    }
+
+                    if (callback) callback()
+                }
+            }, stepTime)
+        },
+
+        // 暂停音频（淡出后暂停）
+        pauseAudio() {
+            if (!this.isPlaying) return
+
+            this.fadeOut(() => {
+                if (this.sourceNode) {
+                    try {
+                        this.sourceNode.stop()
+                    } catch (e) {
+                        return
+                    }
+                    this.sourceNode = null
+                }
+                this.isPlaying = false
+                this.showToast('已暂停', 'info')
+            })
+        },
+
+        // 恢复播放（淡入）
+        async resumeAudio() {
+            if (this.isPlaying || !this.currentAudio) return
+
+            // 恢复 AudioContext
+            if (this.audioContext && this.audioContext.state === 'suspended') {
+                await this.audioContext.resume()
+            }
+
+            // 重新创建播放源
+            this.createAndPlaySource()
+        },
+
+        // 停止播放
+        stopPlayback() {
+            if (this.fadeInterval) {
+                clearInterval(this.fadeInterval)
+                this.fadeInterval = null
+            }
+
+            if (this.sourceNode) {
+                try {
+                    this.sourceNode.stop()
+                } catch (e) {
+                    return
+                }
+                this.sourceNode = null
+            }
+
+            this.isPlaying = false
+            this.currentAudio = null
+            this.isFading = false
+
+            // 重置音量
+            if (this.gainNode) {
+                this.gainNode.gain.value = 0.8
+            }
+
+            this.$emit('stopped')
+        },
+
+        // 加载音频列表
         loadAudioList() {
             const saved = localStorage.getItem(STORAGE_KEY)
             if (saved) {
                 try {
                     const parsed = JSON.parse(saved)
-                    // 合并默认音频和自定义音频，去重
                     const defaultIds = DEFAULT_AUDIOS.map(d => d.id)
                     const customAudios = parsed.filter(a => !defaultIds.includes(a.id))
                     this.audioList = [...DEFAULT_AUDIOS, ...customAudios]
@@ -123,98 +372,14 @@ export default {
             this.saveAudioList()
         },
 
-        // 保存到localStorage
+        // 保存音频列表
         saveAudioList() {
             const toSave = this.audioList.filter(a => !a.isDefault)
             localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave))
         },
 
-        // 播放音频（使用和HTML完全一样的逻辑）
-        playAudio(audio) {
-            // 如果正在播放同一首，停止它（HTML版本是重新开始）
-            if (this.currentAudio && this.currentAudio.id === audio.id && this.currentAudioElement) {
-                this.stopPlayback()
-            }
-
-            // 停止当前播放
-            if (this.currentAudioElement) {
-                this.currentAudioElement.pause()
-                this.currentAudioElement = null
-            }
-
-            try {
-                // 创建新的音频对象（和HTML完全一样）
-                const audioObj = new Audio()
-                audioObj.src = audio.url
-                audioObj.loop = true // 循环播放
-                audioObj.crossOrigin = 'anonymous' // 允许跨域
-
-                // 播放（和HTML一样的逻辑）
-                const playPromise = audioObj.play()
-                if (playPromise !== undefined) {
-                    playPromise.then(() => {
-                        this.currentAudioElement = audioObj
-                        this.currentAudio = audio
-                        this.isPlaying = true
-                        this.showToast(`🎵 正在播放：${audio.title}`, 'success')
-                    }).catch(err => {
-                        console.error('播放失败:', err)
-                        this.showToast('播放失败，请检查音频链接是否有效', 'error')
-                    })
-                }
-
-                // 音频结束时自动重播（和HTML一样）
-                audioObj.addEventListener('ended', () => {
-                    if (this.currentAudioElement === audioObj) {
-                        audioObj.currentTime = 0
-                        audioObj.play().catch(e => console.log('重播失败', e))
-                    }
-                })
-
-            } catch (err) {
-                console.error('创建音频失败:', err)
-                this.showToast('无法播放该音频', 'error')
-            }
-        },
-
-        // 暂停
-        pauseAudio() {
-            if (this.currentAudioElement && this.isPlaying) {
-                this.currentAudioElement.pause()
-                this.isPlaying = false
-                this.showToast('已暂停', 'info')
-            }
-        },
-
-        // 恢复播放
-        resumeAudio() {
-            if (this.currentAudioElement && !this.isPlaying) {
-                const playPromise = this.currentAudioElement.play()
-                if (playPromise !== undefined) {
-                    playPromise.then(() => {
-                        this.isPlaying = true
-                        this.showToast('继续播放', 'info')
-                    }).catch(err => {
-                        console.error('恢复播放失败', err)
-                    })
-                }
-            }
-        },
-
-        // 停止播放
-        stopPlayback() {
-            if (this.currentAudioElement) {
-                this.currentAudioElement.pause()
-                this.currentAudioElement = null
-            }
-            this.currentAudio = null
-            this.isPlaying = false
-            this.$emit('stopped')
-        },
-
         // 添加自定义音频
         addAudio(audioData) {
-            // 检查是否已存在相同URL
             const exists = this.audioList.some(a => a.url === audioData.url)
             if (exists) {
                 this.showToast('该音频链接已存在', 'error')
@@ -244,7 +409,6 @@ export default {
                 return
             }
 
-            // 如果正在播放，先停止
             if (this.currentAudio && this.currentAudio.id === id) {
                 this.stopPlayback()
             }
@@ -270,11 +434,11 @@ export default {
 </script>
 
 <style scoped>
+/* 样式保持不变，和之前一样 */
 .audio-player {
     position: relative;
 }
 
-/* 当前播放卡片 */
 .current-playing {
     margin-bottom: 20px;
 }
@@ -392,7 +556,6 @@ export default {
     background: rgba(200, 80, 80, 0.5);
 }
 
-/* 音频列表容器 */
 .audio-list-container {
     background: rgba(20, 25, 45, 0.5);
     backdrop-filter: blur(20px);
@@ -428,7 +591,6 @@ export default {
     border-radius: 20px;
 }
 
-/* 音频列表 - 支持滚动 */
 .audio-list {
     max-height: 380px;
     overflow-y: auto;
@@ -568,7 +730,6 @@ export default {
     font-size: 13px;
 }
 
-/* Toast 提示 */
 .toast-message {
     position: fixed;
     bottom: 100px;
