@@ -37,9 +37,6 @@
                     :class="['audio-list-item', { active: currentAudio && currentAudio.id === audio.id }]"
                     @click="playAudio(audio)">
                     <div class="item-info">
-                        <div class="item-icon">
-                            {{ getAudioIcon(audio.title) }}
-                        </div>
                         <div class="item-details">
                             <div class="item-title">{{ audio.title }}</div>
                             <div class="item-duration">{{ audio.duration || '自定义' }}</div>
@@ -113,17 +110,6 @@ export default {
         }
     },
     methods: {
-        // 获取音频图标
-        getAudioIcon(title) {
-            if (title.includes('沙漠之夜')) return '🏜️'
-            if (title.includes('旷野蟋蟀')) return '🦗'
-            if (title.includes('夜晚蛐蛐')) return '🌙'
-            if (title.includes('溪流与虫鸣')) return '🏞️'
-            if (title.includes('轻柔小雨声')) return '🌧️'
-            if (title.includes('雷雨')) return '🌩️'
-            return '🎵'
-        },
-
         // 初始化 Web Audio API
         initAudioContext() {
             try {
@@ -629,12 +615,6 @@ export default {
     align-items: center;
     gap: 12px;
     flex: 1;
-}
-
-.item-icon {
-    width: 32px;
-    font-size: 18px;
-    text-align: center;
 }
 
 .item-details {
