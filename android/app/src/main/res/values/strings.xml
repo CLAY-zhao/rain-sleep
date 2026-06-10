@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">雨声助眠</string>
+    <string name="title_activity_main">雨声助眠</string>
+    <string name="package_name">com.rainsleep.com</string>
+    <string name="custom_url_scheme">com.rainsleep.com</string>
+    <string name="audio_player_service_description">允许音频在后台持续播放，助你安心入睡</string>
+</resources>

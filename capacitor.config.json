@@ -1,0 +1,15 @@
+{
+  "appId": "com.rainsleep.com",
+  "appName": "雨声助眠",
+  "webDir": "dist",
+  "plugins": {
+    "BackgroundAudio": {
+      "notification": {
+        "enabled": true,
+        "channelId": "audio_playback",
+        "channelName": "音频播放",
+        "priority": 2
+      }
+    }
+  }
+}
